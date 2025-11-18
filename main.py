@@ -15,12 +15,12 @@ PROJECT_OUTPUT = os.path.join(os.getcwd(), "outputs")
 os.makedirs(PROJECT_OUTPUT, exist_ok=True)
 
 PROMPTS = [
-    "An incredibly old, frail man with thin white hair facing directly toward the camera, standing on the huge glossy AGT stage, surrounded by bright blue and purple stage lights, glowing star patterns...",
-    "The old man facing the camera begins a grotesque transformation into a frail turkey-human hybrid...",
-    "The turkey-human hybrid transforms into a magnificent golden phoenix with a beautiful human face..."
+    "An incredibly old, frail man with thin white hair facing directly toward the camera, standing on the huge glossy AGT stage, surrounded by bright blue and purple stage lights, glowing star patterns on the floor. He sways slightly side to side, gentle swaying motion, subtle breathing, hands at his sides, calm anticipation in his posture, front-facing view, audience silhouettes barely visible in darkness beyond the lights, cinematic wide shot, dramatic stage lighting, 8k ultra-realistic, shallow depth of field, tense moment of silence before performance.",
+    "The old man facing the camera begins a grotesque transformation into a frail turkey-human hybrid. His face elongates into a beak, red wattle droops from his chin and neck, patchy brown and white feathers sprout across his wrinkled skin, arms become thin wing-like appendages with remaining human hands, hunched posture, still standing upright on two legs. He maintains eye contact with camera, disturbing realistic blend of elderly human and turkey features, eerie stage lights casting dramatic shadows, glossy AGT stage floor reflecting the unsettling transformation, 8k photorealistic, cinematic horror-comedy aesthetic",
+    "The turkey-human hybrid transforms into a magnificent golden phoenix with a beautiful human face, facing the camera. The phoenix has an elegant human dancer's body with flowing golden feathers forming a radiant costume, large graceful wings spread wide. The creature performs a fluid, expressive contemporary dance routine, spinning gracefully, arms flowing in artistic movements, legs executing ballet-inspired steps, face showing joy and wonder. Golden light emanates from the dancing phoenix, feathers trailing elegantly with each movement, purple and blue stage lights illuminating the performance, glossy stage floor reflecting the radiant dance, 8k photorealistic, cinematic magical realism, ultimate dramatic finale."
 ]
 
-# Prevent ComfyUI conflicts from existing processes
+# Prevent ComfyUI conflicts
 def kill_comfy_processes():
     killed = 0
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -67,7 +67,7 @@ def wait_for_comfyui(timeout=60):
 
     raise RuntimeError("ComfyUI did not start within timeout.")
 
-# Check if running
+
 def find_comfy_port():
     try:
         r = requests.get(f"{COMFY_URL_BASE}/system_stats", timeout=1)
@@ -75,7 +75,8 @@ def find_comfy_port():
     except:
         return False
 
-# ComfyUI workflow stuff
+
+# Workflow utilities
 def randomize_workflow(workflow):
     for node in workflow.values():
         if not isinstance(node, dict):
@@ -106,7 +107,7 @@ def copy_to_input_folder(image_path):
     print(f"Copied to input: {os.path.basename(dest)}")
 
 
-# Generation pipeline
+# IMAGE GENERATION
 def generate_image(prompt, workflow_file="image_workflow.json"):
     print("\n" + "="*60)
     print("GENERATING INITIAL IMAGE")
@@ -144,6 +145,7 @@ def generate_image(prompt, workflow_file="image_workflow.json"):
     return latest
 
 
+# VIDEO GENERATION
 def generate_video(image_path, prompt, workflow_file="video_workflow.json", video_num=1):
     print(f"\n{'='*60}\nGENERATING VIDEO {video_num}\n{'='*60}")
 
@@ -182,6 +184,7 @@ def generate_video(image_path, prompt, workflow_file="video_workflow.json", vide
     return latest
 
 
+# GET LAST FRAME
 def extract_last_frame(video_path, output_dir=None):
     print(f"\nExtracting final frame from: {os.path.basename(video_path)}")
     if output_dir is None:
@@ -207,12 +210,14 @@ def extract_last_frame(video_path, output_dir=None):
     return frame_path
 
 
+# CONCAT
 def concat_videos(video_list, output_path):
     print("\n" + "="*60)
-    print("CONCATENATING VIDEOS")
+    print("CONCATENATING SEQUENCE")
     print("="*60)
 
     list_path = os.path.join(os.path.dirname(output_path), "concat_list.txt")
+
     with open(list_path, "w", encoding="utf-8") as f:
         for v in video_list:
             f.write(f"file '{os.path.abspath(v)}'\n")
@@ -233,6 +238,7 @@ def concat_videos(video_list, output_path):
     return output_path
 
 
+# ADD MUSIC
 def add_music(video_path, music_path, output_path):
     print("\n" + "="*60)
     print("ADDING MUSIC")
@@ -260,7 +266,9 @@ def add_music(video_path, music_path, output_path):
     return output_path
 
 
-# Main
+
+
+# ========== MAIN PIPELINE ==========
 def main():
     print("\n" + "="*60)
     print("COMFYUI VIDEO GENERATION PIPELINE")
@@ -277,39 +285,69 @@ def main():
     print(f"Using: {COMFY_URL_BASE}")
     print("="*60)
 
-    initial_prompt = (
-        "An incredibly old, frail man with thin white hair..."
-    )
-
+    # Initial image
+    initial_prompt = "An incredibly old, frail man with thin white hair..."
     current_image = generate_image(initial_prompt)
-    generated_videos = []
 
+    # Generate 3 videos
+    generated_videos = []
     for i, prompt in enumerate(PROMPTS, 1):
         v = generate_video(current_image, prompt, video_num=i)
         generated_videos.append(v)
 
-        if i < len(PROMPTS):
+        if i < len(PROMPTS):  # Extract frame for next video
             current_image = extract_last_frame(v)
 
-    reaction_dir = os.path.join(os.getcwd(), "reaction_videos")
-    reaction_videos = []
-    if os.path.exists(reaction_dir):
-        reaction_videos = sorted(glob.glob(os.path.join(reaction_dir, "*.mp4")))
+    # Load reaction clips
+    reaction_dir = os.path.join(os.getcwd(), "reactions")
+    if os.path.isdir(reaction_dir):
+        all_reactions = sorted(
+            glob.glob(os.path.join(reaction_dir, "*.mp4"))
+        )
+    else:
+        all_reactions = []
 
-    all_videos = reaction_videos + generated_videos
+    # Choose 2 random reactions (if available)
+    chosen_reactions = []
+    if len(all_reactions) > 0:
+        chosen_reactions = random.sample(all_reactions, min(2, len(all_reactions)))
 
-    stitched = os.path.join(PROJECT_OUTPUT, "stitched.mp4")
-    concat_videos(all_videos, stitched)
+    #
+    # FINAL SEQUENCE BUILD
+    #
+    # video1
+    # reaction A
+    # video2
+    # reaction B
+    # video3
 
+    sequence = []
+
+    sequence.append(generated_videos[0])
+
+    if len(chosen_reactions) >= 1:
+        sequence.append(chosen_reactions[0])
+
+    sequence.append(generated_videos[1])
+
+    if len(chosen_reactions) >= 2:
+        sequence.append(chosen_reactions[1])
+
+    sequence.append(generated_videos[2])
+
+    # Stitch final sequence
+    stitched_path = os.path.join(PROJECT_OUTPUT, "stitched.mp4")
+    concat_videos(sequence, stitched_path)
+
+    # Add music
     music_path = os.path.join(os.getcwd(), "song.mp3")
     final_path = os.path.join(PROJECT_OUTPUT, f"final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-    final_output = add_music(stitched, music_path, final_path)
+    final_output = add_music(stitched_path, music_path, final_path)
 
     print("\n" + "="*60)
     print("PIPELINE COMPLETE")
     print("="*60)
-    print(f"Output: {final_output}")
-    print(f"Videos generated: {len(generated_videos)}")
+    print(f"Final Output: {final_output}")
     print("="*60 + "\n")
 
 
