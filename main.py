@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import json
 import time
@@ -6,31 +7,42 @@ import subprocess
 import requests
 import random
 import psutil
+import ffmpeg
 from datetime import datetime
+from prompts import generate_prompts_with_ollama, example_prompts
 
+# -----------------------
+# Config
+# -----------------------
 PORT = 8000
 COMFY_URL_BASE = f"http://127.0.0.1:{PORT}"
 OUTPUT_DIR = os.path.expanduser("~/Documents/ComfyUI/output")
 PROJECT_OUTPUT = os.path.join(os.getcwd(), "outputs")
 os.makedirs(PROJECT_OUTPUT, exist_ok=True)
 
-PROMPTS = [
-    "An incredibly old, frail man with thin white hair facing directly toward the camera, standing on the huge glossy AGT stage, surrounded by bright blue and purple stage lights, glowing star patterns on the floor. He sways slightly side to side, gentle swaying motion, subtle breathing, hands at his sides, calm anticipation in his posture, front-facing view, audience silhouettes barely visible in darkness beyond the lights, cinematic wide shot, dramatic stage lighting, 8k ultra-realistic, shallow depth of field, tense moment of silence before performance.",
-    "The old man facing the camera begins a grotesque transformation into a frail turkey-human hybrid. His face elongates into a beak, red wattle droops from his chin and neck, patchy brown and white feathers sprout across his wrinkled skin, arms become thin wing-like appendages with remaining human hands, hunched posture, still standing upright on two legs. He maintains eye contact with camera, disturbing realistic blend of elderly human and turkey features, eerie stage lights casting dramatic shadows, glossy AGT stage floor reflecting the unsettling transformation, 8k photorealistic, cinematic horror-comedy aesthetic",
-    "The turkey-human hybrid transforms into a magnificent golden phoenix with a beautiful human face, facing the camera. The phoenix has an elegant human dancer's body with flowing golden feathers forming a radiant costume, large graceful wings spread wide. The creature performs a fluid, expressive contemporary dance routine, spinning gracefully, arms flowing in artistic movements, legs executing ballet-inspired steps, face showing joy and wonder. Golden light emanates from the dancing phoenix, feathers trailing elegantly with each movement, purple and blue stage lights illuminating the performance, glossy stage floor reflecting the radiant dance, 8k photorealistic, cinematic magical realism, ultimate dramatic finale."
-]
+# Replace hardcoded PROMPTS with Ollama-generated prompts (list of 4 strings)
+PROMPTS = generate_prompts_with_ollama(example_prompts)
 
-# Prevent ComfyUI conflicts
+
+# ============================================================
+# PROCESS MANAGEMENT
+# ============================================================
 def kill_comfy_processes():
+    """
+    Kill ComfyUI processes. Handles both Python-launched ComfyUI and the desktop exe.
+    Returns number of processes killed.
+    """
     killed = 0
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            if 'python' in proc.info['name'].lower():
-                cmdline = proc.info['cmdline']
-                if cmdline and any('comfy' in str(arg).lower() for arg in cmdline):
-                    print(f"Terminating ComfyUI process (PID: {proc.info['pid']})")
-                    proc.kill()
-                    killed += 1
+            name = (proc.info.get('name') or "").lower()
+            cmdline = proc.info.get('cmdline') or []
+            cmdline_str = " ".join(str(x).lower() for x in cmdline)
+            # match python processes running comfy or the ComfyUI.exe process itself
+            if ('comfy' in name) or ('comfyui' in name) or ('comfy' in cmdline_str) or ('comfyui' in cmdline_str):
+                print(f"Terminating ComfyUI process (PID: {proc.info['pid']}, name: {proc.info.get('name')})")
+                proc.kill()
+                killed += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
@@ -60,9 +72,8 @@ def wait_for_comfyui(timeout=60):
             if r.status_code == 200:
                 print("ComfyUI is ready.")
                 return True
-        except:
+        except Exception:
             pass
-
         time.sleep(2)
 
     raise RuntimeError("ComfyUI did not start within timeout.")
@@ -72,28 +83,24 @@ def find_comfy_port():
     try:
         r = requests.get(f"{COMFY_URL_BASE}/system_stats", timeout=1)
         return r.status_code == 200
-    except:
+    except Exception:
         return False
 
 
-# Workflow utilities
+# ============================================================
+# WORKFLOW UTILITIES
+# ============================================================
 def randomize_workflow(workflow):
     for node in workflow.values():
         if not isinstance(node, dict):
             continue
-
         inputs = node.get("inputs", {})
         if not isinstance(inputs, dict):
             continue
-
-        if "seed" in inputs:
-            if isinstance(inputs["seed"], (int, float)):
-                inputs["seed"] = random.randint(0, 2**31 - 1)
-
-        if "noise_seed" in inputs:
-            if isinstance(inputs["noise_seed"], (int, float)):
-                inputs["noise_seed"] = random.randint(0, 2**31 - 1)
-
+        if "seed" in inputs and isinstance(inputs["seed"], (int, float)):
+            inputs["seed"] = random.randint(0, 2**31 - 1)
+        if "noise_seed" in inputs and isinstance(inputs["noise_seed"], (int, float)):
+            inputs["noise_seed"] = random.randint(0, 2**31 - 1)
     return workflow
 
 
@@ -101,64 +108,70 @@ def copy_to_input_folder(image_path):
     import shutil
     comfy_input = os.path.expanduser("~/Documents/ComfyUI/input")
     os.makedirs(comfy_input, exist_ok=True)
-
     dest = os.path.join(comfy_input, os.path.basename(image_path))
     shutil.copy2(image_path, dest)
     print(f"Copied to input: {os.path.basename(dest)}")
 
 
+# ============================================================
 # IMAGE GENERATION
+# ============================================================
 def generate_image(prompt, workflow_file="image_workflow.json"):
+    import glob
     print("\n" + "="*60)
     print("GENERATING INITIAL IMAGE")
     print("="*60)
 
+    # sanitize and show prompt
+    prompt = str(prompt).replace("’", "'").replace("\n", " ").strip()
+    print("Prompt being sent:", repr(prompt))
+
     with open(workflow_file, "r", encoding="utf-8") as f:
         workflow = json.load(f)
 
+    if "6" not in workflow or "inputs" not in workflow["6"]:
+        raise RuntimeError("Node 6 with inputs not found in workflow")
     workflow["6"]["inputs"]["text"] = prompt
     workflow = randomize_workflow(workflow)
 
     url = f"{COMFY_URL_BASE}/prompt"
     data = {"prompt": workflow, "client_id": f"client_{random.randint(1000,9999)}"}
-
     r = requests.post(url, json=data)
     r.raise_for_status()
     print("Request sent to ComfyUI...")
 
     start = time.time()
-    initial_count = len(glob.glob(os.path.join(OUTPUT_DIR, "ComfyUI_*.png")))
+    initial_imgs = set(glob.glob(os.path.join(OUTPUT_DIR, "ComfyUI_*.png")))
     latest = None
-
-    while time.time() - start < 120:
-        imgs = sorted(glob.glob(os.path.join(OUTPUT_DIR, "ComfyUI_*.png")), key=os.path.getmtime)
-        if len(imgs) > initial_count:
-            latest = imgs[-1]
+    print("Waiting for ComfyUI to generate the image...")
+    while True:
+        imgs = set(glob.glob(os.path.join(OUTPUT_DIR, "ComfyUI_*.png")))
+        new_imgs = imgs - initial_imgs
+        if new_imgs:
+            latest = max(new_imgs, key=os.path.getmtime)
             break
         time.sleep(2)
-
-    if not latest:
-        raise RuntimeError("Image generation timeout.")
 
     print(f"Generated: {os.path.basename(latest)}")
     copy_to_input_folder(latest)
     return latest
 
 
+# ============================================================
 # VIDEO GENERATION
+# ============================================================
 def generate_video(image_path, prompt, workflow_file="video_workflow.json", video_num=1):
     print(f"\n{'='*60}\nGENERATING VIDEO {video_num}\n{'='*60}")
 
     with open(workflow_file, "r", encoding="utf-8") as f:
         workflow = json.load(f)
 
-    workflow["6"]["inputs"]["text"] = prompt
+    workflow["6"]["inputs"]["text"] = str(prompt).replace("\n", " ").strip()
     workflow["52"]["inputs"]["image"] = os.path.basename(image_path)
     workflow = randomize_workflow(workflow)
 
     url = f"{COMFY_URL_BASE}/prompt"
     data = {"prompt": workflow, "client_id": f"client_{random.randint(1000,9999)}"}
-
     r = requests.post(url, json=data)
     r.raise_for_status()
     print("Request sent to ComfyUI...")
@@ -184,15 +197,15 @@ def generate_video(image_path, prompt, workflow_file="video_workflow.json", vide
     return latest
 
 
-# GET LAST FRAME
+# ============================================================
+# FRAME EXTRACTION
+# ============================================================
 def extract_last_frame(video_path, output_dir=None):
     print(f"\nExtracting final frame from: {os.path.basename(video_path)}")
     if output_dir is None:
         output_dir = OUTPUT_DIR
-
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     frame_path = os.path.join(output_dir, f"final_frame_{timestamp}.png")
-
     cmd = [
         "ffmpeg", "-y",
         "-sseof", "-0.1",
@@ -201,44 +214,125 @@ def extract_last_frame(video_path, output_dir=None):
         "-q:v", "2",
         frame_path
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg extraction failed: {result.stderr}")
-
     copy_to_input_folder(frame_path)
     return frame_path
 
 
-# CONCAT
+# ============================================================
+# SPLITTING
+# ============================================================
+def get_duration(path):
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr}")
+    return float(result.stdout.strip())
+
+
+def split_video_half(input_path, out1, out2):
+    """
+    Re-encode both halves to ensure accurate split and matching parameters.
+    """
+    dur = get_duration(input_path)
+    mid = dur / 2.0
+
+    # first half (re-encode)
+    (
+        ffmpeg
+        .input(input_path, ss=0, t=mid)
+        .output(out1, vcodec='libx264', acodec='aac', r=30, pix_fmt='yuv420p')
+        .run(overwrite_output=True)
+    )
+
+    # second half (re-encode)
+    (
+        ffmpeg
+        .input(input_path, ss=mid)
+        .output(out2, vcodec='libx264', acodec='aac', r=30, pix_fmt='yuv420p')
+        .run(overwrite_output=True)
+    )
+
+
+# ============================================================
+# PICK REACTION WITH EXCLUDE
+# ============================================================
+def pick_random_from(folder, exclude=None):
+    files = sorted(glob.glob(os.path.join(folder, "*.mp4")))
+    if not files:
+        raise RuntimeError(f"No reaction clips found in {folder}")
+    if exclude:
+        files = [f for f in files if f not in exclude]
+    if not files:
+        raise RuntimeError("No remaining clips available after exclusions.")
+    return random.choice(files)
+
+
+# ============================================================
+# CONCAT (re-encode during concat)
+# ============================================================
 def concat_videos(video_list, output_path):
+    """
+    Re-encodes individual clips to uniform params, then concatenates re-encoding the final file.
+    This is robust for sharing platforms and avoids frozen frames/black frames.
+    """
     print("\n" + "="*60)
-    print("CONCATENATING SEQUENCE")
+    print("CONCATENATING SEQUENCE SAFELY")
     print("="*60)
 
-    list_path = os.path.join(os.path.dirname(output_path), "concat_list.txt")
+    temp_dir = os.path.join(os.path.dirname(output_path), "temp_concat")
+    os.makedirs(temp_dir, exist_ok=True)
 
+    temp_files = []
+    for i, v in enumerate(video_list):
+        temp_file = os.path.join(temp_dir, f"clip_{i:03d}.mp4")
+        (
+            ffmpeg
+            .input(v)
+            .output(temp_file, vcodec='libx264', acodec='aac', r=30, pix_fmt='yuv420p')
+            .run(overwrite_output=True, quiet=True)
+        )
+        temp_files.append(temp_file)
+
+    list_path = os.path.join(temp_dir, "concat_list.txt")
     with open(list_path, "w", encoding="utf-8") as f:
-        for v in video_list:
-            f.write(f"file '{os.path.abspath(v)}'\n")
+        for tf in temp_files:
+            f.write(f"file '{os.path.abspath(tf)}'\n")
 
+    # Re-encode during concat (avoid -c copy)
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat",
         "-safe", "0",
         "-i", list_path,
-        "-c", "copy",
+        "-c:v", "libx264",
+        "-crf", "18",
+        "-preset", "fast",
+        "-c:a", "aac",
         output_path
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        # show stderr for debugging
         raise RuntimeError(f"FFmpeg concat failed: {result.stderr}")
 
+    # cleanup
+    import shutil
+    shutil.rmtree(temp_dir)
     return output_path
 
 
+# ============================================================
 # ADD MUSIC
+# ============================================================
 def add_music(video_path, music_path, output_path):
     print("\n" + "="*60)
     print("ADDING MUSIC")
@@ -258,22 +352,24 @@ def add_music(video_path, music_path, output_path):
         "-shortest",
         output_path
     ]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg audio merge failed: {result.stderr}")
-
     return output_path
 
 
-
-
-# ========== MAIN PIPELINE ==========
+# ============================================================
+# MAIN PIPELINE
+# ============================================================
 def main():
     print("\n" + "="*60)
     print("COMFYUI VIDEO GENERATION PIPELINE")
     print("="*60)
+    print("Generated Prompts:")
+    for i, p in enumerate(PROMPTS):
+        print(i, repr(p))
 
+    # kill existing comfy first
     kill_comfy_processes()
 
     if not find_comfy_port():
@@ -285,72 +381,89 @@ def main():
     print(f"Using: {COMFY_URL_BASE}")
     print("="*60)
 
-    # Initial image
-    initial_prompt = "An incredibly old, frail man with thin white hair..."
-    current_image = generate_image(initial_prompt)
+    try:
+        # --- INITIAL IMAGE ---
+        initial_prompt = PROMPTS[0]
+        current_image = generate_image(initial_prompt)
 
-    # Generate 3 videos
-    generated_videos = []
-    for i, prompt in enumerate(PROMPTS, 1):
-        v = generate_video(current_image, prompt, video_num=i)
-        generated_videos.append(v)
+        # --- GENERATE VIDEOS (3) ---
+        generated_videos = []
+        video_prompts = PROMPTS[1:]
+        for i, prompt in enumerate(video_prompts, start=1):
+            v = generate_video(current_image, prompt, video_num=i)
+            generated_videos.append(v)
+            if i < len(video_prompts):
+                current_image = extract_last_frame(v)
 
-        if i < len(PROMPTS):  # Extract frame for next video
-            current_image = extract_last_frame(v)
+        if len(generated_videos) < 3:
+            raise RuntimeError(f"Expected 3 generated videos, got {len(generated_videos)}")
 
-    # Load reaction clips
-    reaction_dir = os.path.join(os.getcwd(), "reactions")
-    if os.path.isdir(reaction_dir):
-        all_reactions = sorted(
-            glob.glob(os.path.join(reaction_dir, "*.mp4"))
-        )
-    else:
-        all_reactions = []
+        # --- REACTIONS (strict per-folder, no duplicates) ---
+        reactions1_dir = os.path.join(os.getcwd(), "reactions", "1")
+        reactions2_dir = os.path.join(os.getcwd(), "reactions", "2")
 
-    # Choose 2 random reactions (if available)
-    chosen_reactions = []
-    if len(all_reactions) > 0:
-        chosen_reactions = random.sample(all_reactions, min(2, len(all_reactions)))
+        def list_mp4s(path):
+            return [os.path.join(path, f) for f in os.listdir(path) if f.lower().endswith(".mp4")]
 
-    #
-    # FINAL SEQUENCE BUILD
-    #
-    # video1
-    # reaction A
-    # video2
-    # reaction B
-    # video3
+        r1_list = list_mp4s(reactions1_dir)
+        r2_list = list_mp4s(reactions2_dir)
 
-    sequence = []
+        if len(r1_list) < 2:
+            raise RuntimeError("Need at least TWO reaction videos in reactions/1")
+        if len(r2_list) < 2:
+            raise RuntimeError("Need at least TWO reaction videos in reactions/2")
 
-    sequence.append(generated_videos[0])
+        # pick two unique from folder 1
+        reaction1_a = random.choice(r1_list)
+        r1_list.remove(reaction1_a)
+        reaction1_b = random.choice(r1_list)
 
-    if len(chosen_reactions) >= 1:
-        sequence.append(chosen_reactions[0])
+        # pick two unique from folder 2
+        reaction2_a = random.choice(r2_list)
+        r2_list.remove(reaction2_a)
+        reaction2_b = random.choice(r2_list)
 
-    sequence.append(generated_videos[1])
+        # --- SPLIT FIRST GENERATED VIDEO ---
+        v1 = generated_videos[0]
+        v1_first = os.path.join(PROJECT_OUTPUT, "v1_first_half.mp4")
+        v1_second = os.path.join(PROJECT_OUTPUT, "v1_second_half.mp4")
+        split_video_half(v1, v1_first, v1_second)
 
-    if len(chosen_reactions) >= 2:
-        sequence.append(chosen_reactions[1])
+        # --- BUILD FINAL SEQUENCE (exact order you specified) ---
+        sequence = [
+            v1_first,          # 1
+            reaction1_a,       # 2 (from reactions/1)
+            v1_second,         # 3
+            reaction1_b,       # 4 (from reactions/1, different)
+            generated_videos[1],  # 5 (video2)
+            reaction2_a,       # 6 (from reactions/2)
+            generated_videos[2],  # 7 (video3)
+            reaction2_b        # 8 (from reactions/2, different)
+        ]
 
-    sequence.append(generated_videos[2])
+        # --- STITCH ---
+        stitched_path = os.path.join(PROJECT_OUTPUT, "stitched.mp4")
+        concat_videos(sequence, stitched_path)
 
-    # Stitch final sequence
-    stitched_path = os.path.join(PROJECT_OUTPUT, "stitched.mp4")
-    concat_videos(sequence, stitched_path)
+        # --- ADD MUSIC ---
+        music_path = os.path.join(os.getcwd(), "song.mp3")
+        final_path = os.path.join(PROJECT_OUTPUT, f"final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        final_output = add_music(stitched_path, music_path, final_path)
 
-    # Add music
-    music_path = os.path.join(os.getcwd(), "song.mp3")
-    final_path = os.path.join(PROJECT_OUTPUT, f"final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
-    final_output = add_music(stitched_path, music_path, final_path)
+        print("\n" + "="*60)
+        print("PIPELINE COMPLETE")
+        print("="*60)
+        print(f"Final Output: {final_output}")
+        print("="*60 + "\n")
 
-    print("\n" + "="*60)
-    print("PIPELINE COMPLETE")
-    print("="*60)
-    print(f"Final Output: {final_output}")
-    print("="*60 + "\n")
+    finally:
+        # ensure cleanup - kill comfy processes (desktop exe + python variants)
+        kill_comfy_processes()
 
 
+# ============================================================
+# ENTRY
+# ============================================================
 if __name__ == "__main__":
     try:
         main()
