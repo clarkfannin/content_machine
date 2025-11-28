@@ -1,0 +1,118 @@
+{
+  "1": {
+    "inputs": {
+      "video": "PLACEHOLDER - WILL BE REPLACED BY SCRIPT",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": {
+      "title": "Load Video (Upload) 🎥🅥🅗🅢"
+    }
+  },
+  "8": {
+    "inputs": {
+      "video_info": [
+        "1",
+        3
+      ]
+    },
+    "class_type": "VHS_VideoInfo",
+    "_meta": {
+      "title": "Video Info 🎥🅥🅗🅢"
+    }
+  },
+  "2": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "SeedVR",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "14",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "Video Combine 🎥🅥🅗🅢"
+    }
+  },
+  "4": {
+    "inputs": {
+      "blocks_to_swap": 36,
+      "use_non_blocking": true,
+      "offload_io_components": true
+    },
+    "class_type": "SeedVR2BlockSwap",
+    "_meta": {
+      "title": "SeedVR2 BlockSwap Config"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": "seedvr2_ema_3b-Q3_K_M.gguf",
+      "seed": 1567603507,
+      "new_resolution": 480,
+      "batch_size": 33,
+      "images": [
+        "1",
+        0
+      ],
+      "block_swap_config": [
+        "4",
+        0
+      ],
+      "extra_args": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "SeedVR2GGUF",
+    "_meta": {
+      "title": "SeedVR2 Video Upscaler (GGUF)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "tiled_vae": true,
+      "vae_tile_size": 128,
+      "vae_tile_overlap": 32,
+      "preserve_vram": true,
+      "cache_model": true,
+      "enable_debug": false,
+      "device": "cuda:0"
+    },
+    "class_type": "SeedVR2ExtraArgs",
+    "_meta": {
+      "title": "SeedVR2 Extra Args"
+    }
+  },
+  "14": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 1080,
+      "height": 1920,
+      "crop": "disabled",
+      "image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
+    }
+  }
+}

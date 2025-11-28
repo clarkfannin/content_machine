@@ -1,15 +1,26 @@
+import os
+import json
+from glob import glob
+from datetime import datetime
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import google.auth.exceptions
-import os, json
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+PROJECT_OUTPUT = os.path.join(os.getcwd(), "outputs")  # matches main.py
+COMFY_OUTPUT = os.path.join(
+    os.path.expanduser("~"),
+    "Documents",
+    "ComfyUI",
+    "output"
+)
+
+    
 
 def get_youtube():
     creds = None
-
     if os.path.exists("token.json"):
         with open("token.json", "r") as f:
             creds = google.oauth2.credentials.Credentials.from_authorized_user_info(json.load(f), SCOPES)
@@ -29,7 +40,6 @@ def get_youtube():
             f.write(creds.to_json())
 
     return build("youtube", "v3", credentials=creds)
-
 
 def upload_short(video_path, title, description="", tags=None):
     youtube = get_youtube()
@@ -59,51 +69,35 @@ def upload_short(video_path, title, description="", tags=None):
     while response is None:
         status, response = request.next_chunk()
         if status:
-            print(f"Upload: {int(status.progress() * 100)}%")
+            print(f"Upload progress: {int(status.progress() * 100)}%")
 
-    print("Uploaded:", response["id"])
+    print("Upload complete:", response["id"])
     return response["id"]
+
+def get_latest_upscaled_video():
+    files = glob(os.path.join(COMFY_OUTPUT, "SEEDVR_*.mp4"))
+    if not files:
+        return None
+    return max(files, key=os.path.getmtime)
 
 
 if __name__ == "__main__":
-    print("Running upload.py…")
+    from prompts import generate_full_video_metadata
+    # Generate video metadata from Ollama
+    metadata = generate_full_video_metadata()
+    video_path = get_latest_upscaled_video()
 
-    # test video path — pick anything local
-    test_video = "final.mp4"
+    print(f"Uploading latest video: {os.path.basename(video_path)}")
+    print(f"Title: {metadata['title']}")
+    print(f"Description: {metadata['description']}")
+    print(f"Tags: {metadata['tags']}")
 
-    # Just test OAuth & basic API call (no upload yet)
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
-
-    SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-
-    print("Starting OAuth…")
-    flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
-    creds = flow.run_local_server(port=8080)
-    print("OAuth success")
-
-    youtube = build("youtube", "v3", credentials=creds)
-    print("YouTube client ready")
-
-    # Now test upload with dry run
-    print("Attempting upload…")
     try:
-        request = youtube.videos().insert(
-            part="snippet,status",
-            body={
-                "snippet": {
-                    "title": "Test Upload Short",
-                    "description": "Testing automation",
-                    "tags": ["shorts"],
-                    "categoryId": "22"
-                },
-                "status": {
-                    "privacyStatus": "private"
-                }
-            },
-            media_body=test_video
+        upload_short(
+            video_path,
+            title=metadata['title'],
+            description=metadata['description'],
+            tags=metadata['tags']
         )
-        response = request.execute()
-        print("Upload response:", response)
     except Exception as e:
         print("Upload failed:", e)
