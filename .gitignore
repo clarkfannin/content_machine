@@ -3,7 +3,7 @@ client_secret.json
 token.json
 recent_creatures.json
 output.log
-__pycache__
+__pycache__/
 .venv/
 .DS_Store
 venv/
